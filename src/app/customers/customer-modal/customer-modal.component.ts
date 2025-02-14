@@ -2,7 +2,6 @@ import {
   ChangeDetectionStrategy,
   Component,
   inject,
-  signal,
   viewChild,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
@@ -16,10 +15,9 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatProgressSpinner } from '@angular/material/progress-spinner';
-import { MatSnackBar } from '@angular/material/snack-bar';
 import { Customer } from '@/customers/customer.model';
-import { CustomersService } from '@/customers/customers.service';
 import { CustomerFormComponent } from '@/customers/customer-form/customer-form.component';
+import { CustomerModalStore } from '@/customers/customer-modal/customer-modal.store';
 
 @Component({
   selector: 'app-customer-modal',
@@ -41,13 +39,13 @@ import { CustomerFormComponent } from '@/customers/customer-form/customer-form.c
     </mat-dialog-content>
 
     <mat-dialog-actions>
-      @if (isPending()) {
+      @if (store.isPending()) {
         <mat-spinner />
       }
 
       <button
         mat-flat-button
-        [disabled]="customerForm().form().invalid || isPending()"
+        [disabled]="customerForm().form().invalid || store.isPending()"
         (click)="save()"
       >
         Save
@@ -56,32 +54,17 @@ import { CustomerFormComponent } from '@/customers/customer-form/customer-form.c
     </mat-dialog-actions>
   `,
   styleUrl: './customer-modal.component.scss',
+  providers: [CustomerModalStore],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class CustomerModalComponent {
-  readonly #customersService = inject(CustomersService);
-  readonly #snackBar = inject(MatSnackBar);
+  readonly store = inject(CustomerModalStore);
   readonly dialogRef = inject(MatDialogRef);
   readonly customer = inject<Customer | null>(MAT_DIALOG_DATA);
   readonly customerForm = viewChild.required(CustomerFormComponent);
-  readonly isPending = signal(false);
 
   save(): void {
     const formValue: Omit<Customer, 'id'> = this.customerForm().form().value;
-    const saveCustomer = this.customer
-      ? this.#customersService.update({ id: this.customer.id, ...formValue })
-      : this.#customersService.create(formValue);
-
-    this.isPending.set(true);
-    saveCustomer.subscribe({
-      next: (customer) => {
-        this.isPending.set(false);
-        this.dialogRef.close(customer);
-      },
-      error: (error: { message: string }) => {
-        this.isPending.set(false);
-        this.#snackBar.open(error.message, 'Close', { duration: 5_000 });
-      },
-    });
+    this.store.save({ id: this.customer?.id, customer: formValue });
   }
 }

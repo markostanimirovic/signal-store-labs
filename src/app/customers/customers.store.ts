@@ -1,5 +1,7 @@
 import { computed, inject } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { MatDialog } from '@angular/material/dialog';
+import { concatMap, exhaustMap, filter, pipe, tap } from 'rxjs';
 import {
   patchState,
   signalStore,
@@ -9,8 +11,14 @@ import {
   withProps,
   withState,
 } from '@ngrx/signals';
+import { rxMethod } from '@ngrx/signals/rxjs-interop';
+import { tapResponse } from '@ngrx/operators';
+import { ConfirmDialogComponent } from '@/shared/ui/confirm-dialog.component';
 import { Customer } from '@/customers/customer.model';
-import { filterCustomers } from '@/customers/customer.helpers';
+import {
+  filterCustomers,
+  getDeleteCustomerData,
+} from '@/customers/customer.helpers';
 import { CustomersService } from '@/customers/customers.service';
 
 type CustomersState = {
@@ -26,6 +34,7 @@ const initialState: CustomersState = {
 };
 
 export const CustomersStore = signalStore(
+  { providedIn: 'root' },
   withState(initialState),
   withComputed(({ customers, query }) => ({
     filteredCustomers: computed(() => filterCustomers(customers(), query())),
@@ -33,6 +42,7 @@ export const CustomersStore = signalStore(
   withProps(() => ({
     _customersService: inject(CustomersService),
     _snackBar: inject(MatSnackBar),
+    _dialogService: inject(MatDialog),
   })),
   withMethods((store) => {
     function handleError(message: string): void {
@@ -40,43 +50,65 @@ export const CustomersStore = signalStore(
       store._snackBar.open(message, 'Close', { duration: 5_000 });
     }
 
-    function loadAll(): void {
-      patchState(store, { isPending: true });
-
-      store._customersService.getAll().subscribe({
-        next: (customers) => patchState(store, { customers, isPending: false }),
-        error: (error: { message: string }) => handleError(error.message),
-      });
-    }
+    const loadAll = rxMethod<void>(
+      pipe(
+        tap(() => patchState(store, { isPending: true })),
+        exhaustMap(() =>
+          store._customersService.getAll().pipe(
+            tapResponse({
+              next: (customers) =>
+                patchState(store, { customers, isPending: false }),
+              error: (error: { message: string }) => handleError(error.message),
+            }),
+          ),
+        ),
+      ),
+    );
 
     function setQuery(query: string): void {
       patchState(store, { query });
     }
 
-    function setPending(): void {
-      patchState(store, { isPending: true });
+    function upsert(customer: Customer): void {
+      patchState(store, ({ customers }) => {
+        const isUpdate = customers.find((c) => c.id === customer.id);
+
+        return {
+          customers: isUpdate
+            ? customers.map((c) => (c.id === customer.id ? customer : c))
+            : [...customers, customer],
+        };
+      });
     }
 
-    function add(customer: Customer): void {
-      patchState(store, ({ customers }) => ({
-        customers: [...customers, customer],
-      }));
-    }
+    const remove = rxMethod<Customer>(
+      concatMap((customer) =>
+        store._dialogService
+          .open(ConfirmDialogComponent, {
+            data: getDeleteCustomerData(customer),
+          })
+          .afterClosed()
+          .pipe(
+            filter(Boolean),
+            tap(() => patchState(store, { isPending: true })),
+            concatMap(() =>
+              store._customersService.delete(customer.id).pipe(
+                tapResponse({
+                  next: () =>
+                    patchState(store, ({ customers }) => ({
+                      customers: customers.filter((c) => c.id !== customer.id),
+                      isPending: false,
+                    })),
+                  error: (error: { message: string }) =>
+                    handleError(error.message),
+                }),
+              ),
+            ),
+          ),
+      ),
+    );
 
-    function update(customer: Customer): void {
-      patchState(store, ({ customers }) => ({
-        customers: customers.map((c) => (c.id === customer.id ? customer : c)),
-      }));
-    }
-
-    function remove(id: number): void {
-      patchState(store, ({ customers }) => ({
-        customers: customers.filter((c) => c.id !== id),
-        isPending: false,
-      }));
-    }
-
-    return { handleError, loadAll, setQuery, setPending, add, remove, update };
+    return { loadAll, setQuery, upsert, remove };
   }),
   withHooks({
     onInit({ loadAll }) {
