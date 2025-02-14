@@ -1,21 +1,12 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  computed,
-  inject,
-  signal,
-} from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { concatMap, filter } from 'rxjs';
-import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatDialog } from '@angular/material/dialog';
 import { ProgressBarComponent } from '@/shared/ui/progress-bar.component';
 import { ConfirmDialogComponent } from '@/shared/ui/confirm-dialog.component';
 import { CustomersService } from '@/customers/customers.service';
 import { Customer } from '@/customers/customer.model';
-import {
-  filterCustomers,
-  getDeleteCustomerData,
-} from '@/customers/customer.helpers';
+import { getDeleteCustomerData } from '@/customers/customer.helpers';
+import { CustomersStore } from '@/customers/customers.store';
 import { CustomersTableComponent } from '@/customers/customers-table/customers-table.component';
 import { CustomersActionsComponent } from '@/customers/customers-actions/customers-actions.component';
 import { CustomerModalComponent } from '@/customers/customer-modal/customer-modal.component';
@@ -28,52 +19,38 @@ import { CustomerModalComponent } from '@/customers/customer-modal/customer-moda
     CustomersActionsComponent,
   ],
   template: `
-    <app-progress-bar [showProgress]="isPending()" />
+    <app-progress-bar [showProgress]="store.isPending()" />
 
     <div class="container">
-      <h1>Customers ({{ filteredCustomers().length }})</h1>
+      <h1>Customers ({{ store.filteredCustomers().length }})</h1>
 
       <app-customers-actions
-        [(query)]="query"
-        (refresh)="refresh()"
+        [query]="store.query()"
+        (queryChange)="store.setQuery($event)"
+        (refresh)="store.loadAll()"
         (create)="create()"
       />
       <app-customers-table
-        [customers]="filteredCustomers()"
+        [customers]="store.filteredCustomers()"
         (edit)="edit($event)"
         (delete)="delete($event)"
       />
     </div>
   `,
+  providers: [CustomersStore],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export default class CustomersComponent {
   readonly #customersService = inject(CustomersService);
-  readonly #snackBar = inject(MatSnackBar);
   readonly #dialogService = inject(MatDialog);
-  readonly customers = signal<Customer[]>([]);
-  readonly isPending = signal(false);
-  readonly query = signal('');
-  readonly filteredCustomers = computed(() =>
-    filterCustomers(this.customers(), this.query()),
-  );
-
-  constructor() {
-    this.loadAll();
-  }
-
-  refresh(): void {
-    this.loadAll();
-  }
+  readonly store = inject(CustomersStore);
 
   create(): void {
     this.#dialogService
       .open(CustomerModalComponent)
       .afterClosed()
       .pipe(filter(Boolean))
-      .subscribe((customer: Customer) => {
-        this.customers.update((customers) => [...customers, customer]);
-      });
+      .subscribe((customer: Customer) => this.store.add(customer));
   }
 
   edit(customer: Customer): void {
@@ -81,11 +58,7 @@ export default class CustomersComponent {
       .open(CustomerModalComponent, { data: customer })
       .afterClosed()
       .pipe(filter(Boolean))
-      .subscribe((customer: Customer) => {
-        this.customers.update((customers) =>
-          customers.map((c) => (c.id === customer.id ? customer : c)),
-        );
-      });
+      .subscribe((customer: Customer) => this.store.update(customer));
   }
 
   delete(customer: Customer): void {
@@ -97,35 +70,14 @@ export default class CustomersComponent {
       .pipe(
         filter(Boolean),
         concatMap(() => {
-          this.isPending.set(true);
+          this.store.setPending();
           return this.#customersService.delete(customer.id);
         }),
       )
       .subscribe({
-        next: () => {
-          this.customers.update((customers) =>
-            customers.filter((c) => c.id !== customer.id),
-          );
-          this.isPending.set(false);
-        },
-        error: (error: { message: string }) => this.handleError(error.message),
+        next: () => this.store.remove(customer.id),
+        error: (error: { message: string }) =>
+          this.store.handleError(error.message),
       });
-  }
-
-  private loadAll(): void {
-    this.isPending.set(true);
-
-    this.#customersService.getAll().subscribe({
-      next: (customers) => {
-        this.customers.set(customers);
-        this.isPending.set(false);
-      },
-      error: (error: { message: string }) => this.handleError(error.message),
-    });
-  }
-
-  private handleError(message: string): void {
-    this.isPending.set(false);
-    this.#snackBar.open(message, 'Close', { duration: 5_000 });
   }
 }
