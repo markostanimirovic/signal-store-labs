@@ -1,5 +1,4 @@
 import { computed, inject } from '@angular/core';
-import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatDialog } from '@angular/material/dialog';
 import { concatMap, exhaustMap, filter, pipe, tap } from 'rxjs';
 import {
@@ -12,8 +11,22 @@ import {
   withState,
 } from '@ngrx/signals';
 import { rxMethod } from '@ngrx/signals/rxjs-interop';
+import {
+  removeEntity,
+  setAllEntities,
+  setEntity,
+  withEntities,
+} from '@ngrx/signals/entities';
 import { tapResponse } from '@ngrx/operators';
 import { ConfirmDialogComponent } from '@/shared/ui/confirm-dialog.component';
+import {
+  setError,
+  setFulfilled,
+  setPending,
+  withRequestStatus,
+} from '@/shared/store-utils/request-status.feature';
+import { withStorageSync } from '@/shared/store-utils/storage-sync.feature';
+import { withErrorHandler } from '@/shared/store-utils/error-handler.feature';
 import { Customer } from '@/customers/customer.model';
 import {
   filterCustomers,
@@ -21,44 +34,30 @@ import {
 } from '@/customers/customer.helpers';
 import { CustomersService } from '@/customers/customers.service';
 
-type CustomersState = {
-  customers: Customer[];
-  query: string;
-  isPending: boolean;
-};
-
-const initialState: CustomersState = {
-  customers: [],
-  query: '',
-  isPending: false,
-};
-
 export const CustomersStore = signalStore(
   { providedIn: 'root' },
-  withState(initialState),
-  withComputed(({ customers, query }) => ({
-    filteredCustomers: computed(() => filterCustomers(customers(), query())),
+  withState({ query: '' }),
+  withEntities<Customer>(),
+  withRequestStatus(),
+  withErrorHandler(),
+  withComputed(({ entities, query }) => ({
+    filteredCustomers: computed(() => filterCustomers(entities(), query())),
   })),
   withProps(() => ({
     _customersService: inject(CustomersService),
-    _snackBar: inject(MatSnackBar),
     _dialogService: inject(MatDialog),
   })),
   withMethods((store) => {
-    function handleError(message: string): void {
-      patchState(store, { isPending: false });
-      store._snackBar.open(message, 'Close', { duration: 5_000 });
-    }
-
     const loadAll = rxMethod<void>(
       pipe(
-        tap(() => patchState(store, { isPending: true })),
+        tap(() => patchState(store, setPending())),
         exhaustMap(() =>
           store._customersService.getAll().pipe(
             tapResponse({
               next: (customers) =>
-                patchState(store, { customers, isPending: false }),
-              error: (error: { message: string }) => handleError(error.message),
+                patchState(store, setAllEntities(customers), setFulfilled()),
+              error: (error: { message: string }) =>
+                patchState(store, setError(error.message)),
             }),
           ),
         ),
@@ -70,15 +69,7 @@ export const CustomersStore = signalStore(
     }
 
     function upsert(customer: Customer): void {
-      patchState(store, ({ customers }) => {
-        const isUpdate = customers.find((c) => c.id === customer.id);
-
-        return {
-          customers: isUpdate
-            ? customers.map((c) => (c.id === customer.id ? customer : c))
-            : [...customers, customer],
-        };
-      });
+      patchState(store, setEntity(customer));
     }
 
     const remove = rxMethod<Customer>(
@@ -90,17 +81,18 @@ export const CustomersStore = signalStore(
           .afterClosed()
           .pipe(
             filter(Boolean),
-            tap(() => patchState(store, { isPending: true })),
+            tap(() => patchState(store, setPending())),
             concatMap(() =>
               store._customersService.delete(customer.id).pipe(
                 tapResponse({
                   next: () =>
-                    patchState(store, ({ customers }) => ({
-                      customers: customers.filter((c) => c.id !== customer.id),
-                      isPending: false,
-                    })),
+                    patchState(
+                      store,
+                      removeEntity(customer.id),
+                      setFulfilled(),
+                    ),
                   error: (error: { message: string }) =>
-                    handleError(error.message),
+                    patchState(store, setError(error.message)),
                 }),
               ),
             ),
@@ -110,6 +102,7 @@ export const CustomersStore = signalStore(
 
     return { loadAll, setQuery, upsert, remove };
   }),
+  withStorageSync('customers'),
   withHooks({
     onInit({ loadAll }) {
       loadAll();
